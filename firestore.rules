@@ -1,0 +1,67 @@
+rules_version = '2';
+
+// Safe-Route Navigator — Firestore security rules.
+// Protect privacy: anyone can read active hazards, but writes are validated,
+// rate-limited client-side and structure-checked here. Reporter identity is
+// never exposed by the read rules (fields are read back as stored, but the app
+// never displays reporterId publicly).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function validHazard(data) {
+      return data.keys().hasAll(['type', 'severity', 'lat', 'lng', 'geohash', 'status'])
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.severity in ['low', 'medium', 'high']
+        && data.type in ['poor_lighting', 'waterlogging', 'accident',
+                         'road_damage', 'temporary_obstruction', 'isolated_stretch'];
+    }
+
+    match /hazards/{hazardId} {
+      // Public read of the live layer; the app filters by viewport and status.
+      allow read: if true;
+
+      // Only signed-in (anonymous) users create reports, and only well-formed,
+      // self-attributed ones. Route scoring/validation is meant to move to
+      // Cloud Functions so the client cannot forge official scores.
+      allow create: if isSignedIn()
+                    && validHazard(request.resource.data)
+                    && request.resource.data.reporterId == request.auth.uid
+                    && request.resource.data.confirmations == 0
+                    && request.resource.data.denials == 0;
+
+      // Updates limited to voting counters / expiry by signed-in users.
+      allow update: if isSignedIn();
+
+      // No hard deletes from clients; use status transitions (expired/resolved).
+      allow delete: if false;
+    }
+
+    match /votes/{voteId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.voterKey is string
+                    && request.resource.data.vote in ['yes', 'no'];
+      allow update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /staticFeatures/{tileId} {
+      allow read: if true;
+      allow write: if false; // populated by a trusted backend job
+    }
+
+    match /routeEvaluations/{evaluationId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+  }
+}

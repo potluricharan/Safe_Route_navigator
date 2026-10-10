@@ -1,0 +1,5 @@
+export interface MapPoint {
+  lat: number;
+  lng: number;
+  label?: string;
+}
